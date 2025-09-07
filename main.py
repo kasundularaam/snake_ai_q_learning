@@ -3,18 +3,21 @@ import numpy as np
 import random
 import pickle
 import os
-from collections import deque
 from enum import Enum
 
 # Initialize Pygame
 pygame.init()
 
 # Constants
-GRID_SIZE = 20
-GRID_WIDTH = 20
-GRID_HEIGHT = 15
-WINDOW_WIDTH = GRID_WIDTH * GRID_SIZE
-WINDOW_HEIGHT = GRID_HEIGHT * GRID_SIZE + 100  # Extra space for UI
+GRID_SIZE = 40
+GRID_WIDTH = 10
+GRID_HEIGHT = 10
+GAME_AREA_WIDTH = GRID_WIDTH * GRID_SIZE  # 400px
+GAME_AREA_HEIGHT = GRID_HEIGHT * GRID_SIZE  # 400px
+
+# Full screen interface
+WINDOW_WIDTH = 1200  # Much wider for UI
+WINDOW_HEIGHT = 800  # Taller for better layout
 
 # Colors
 BLACK = (0, 0, 0)
@@ -226,49 +229,270 @@ class QLearningAgent:
 class GameRenderer:
     def __init__(self):
         self.screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
-        pygame.display.set_caption("Snake Game - Q-Learning")
+        pygame.display.set_caption("Snake AI - Q-Learning Training Dashboard")
         self.clock = pygame.time.Clock()
-        self.font = pygame.font.Font(None, 36)
+
+        # Large, readable fonts
+        self.font_title = pygame.font.Font(None, 64)
+        self.font_large = pygame.font.Font(None, 48)
+        self.font_medium = pygame.font.Font(None, 36)
+        self.font_small = pygame.font.Font(None, 28)
+
+        # Modern color scheme
+        self.colors = {
+            'background': (15, 15, 25),
+            'game_bg': (25, 25, 35),
+            'snake_head': (80, 255, 80),
+            'snake_body': (50, 200, 50),
+            'snake_border': (30, 150, 30),
+            'food': (255, 80, 80),
+            'food_glow': (255, 120, 120),
+            'text_primary': (255, 255, 255),
+            'text_secondary': (180, 180, 200),
+            'text_accent': (100, 200, 255),
+            'panel_bg': (30, 30, 45),
+            'panel_border': (70, 70, 90),
+            'progress_bg': (40, 40, 55),
+            'progress_fill': (100, 200, 255),
+            'grid_lines': (35, 35, 45)
+        }
+
+        # Layout positions
+        self.game_x = 50
+        self.game_y = (WINDOW_HEIGHT - GAME_AREA_HEIGHT) // 2
+        self.stats_x = GAME_AREA_WIDTH + 100
+        self.stats_y = 50
+
+    def draw_text_with_background(self, text, font, color, bg_color, x, y, padding=10):
+        """Draw text with background panel"""
+        text_surface = font.render(text, True, color)
+        text_rect = text_surface.get_rect()
+
+        # Background panel
+        panel_rect = pygame.Rect(x - padding, y - padding,
+                                 text_rect.width + padding * 2,
+                                 text_rect.height + padding * 2)
+        pygame.draw.rect(self.screen, bg_color, panel_rect)
+        pygame.draw.rect(
+            self.screen, self.colors['panel_border'], panel_rect, 2)
+
+        # Text
+        self.screen.blit(text_surface, (x, y))
+        return text_rect.height + padding * 2
+
+    def draw_progress_bar(self, x, y, width, height, progress, label=""):
+        """Draw a modern progress bar"""
+        # Background
+        bg_rect = pygame.Rect(x, y, width, height)
+        pygame.draw.rect(self.screen, self.colors['progress_bg'], bg_rect)
+        pygame.draw.rect(self.screen, self.colors['panel_border'], bg_rect, 2)
+
+        # Fill
+        if progress > 0:
+            fill_width = int(width * min(progress, 1.0))
+            fill_rect = pygame.Rect(x + 2, y + 2, fill_width - 4, height - 4)
+            pygame.draw.rect(
+                self.screen, self.colors['progress_fill'], fill_rect)
+
+        # Label on bar
+        if label:
+            label_surface = self.font_small.render(
+                label, True, self.colors['text_primary'])
+            label_rect = label_surface.get_rect()
+            label_x = x + (width - label_rect.width) // 2
+            label_y = y + (height - label_rect.height) // 2
+            self.screen.blit(label_surface, (label_x, label_y))
+
+    def draw_game_area(self, game):
+        """Draw the game area with snake and food"""
+        # Game background
+        game_rect = pygame.Rect(self.game_x, self.game_y,
+                                GAME_AREA_WIDTH, GAME_AREA_HEIGHT)
+        pygame.draw.rect(self.screen, self.colors['game_bg'], game_rect)
+        pygame.draw.rect(
+            self.screen, self.colors['panel_border'], game_rect, 3)
+
+        # Grid lines
+        for x in range(0, GAME_AREA_WIDTH + 1, GRID_SIZE):
+            pygame.draw.line(self.screen, self.colors['grid_lines'],
+                             (self.game_x + x, self.game_y),
+                             (self.game_x + x, self.game_y + GAME_AREA_HEIGHT))
+        for y in range(0, GAME_AREA_HEIGHT + 1, GRID_SIZE):
+            pygame.draw.line(self.screen, self.colors['grid_lines'],
+                             (self.game_x, self.game_y + y),
+                             (self.game_x + GAME_AREA_WIDTH, self.game_y + y))
+
+        # Snake
+        for i, segment in enumerate(game.snake):
+            rect = pygame.Rect(
+                self.game_x + segment[0] * GRID_SIZE + 2,
+                self.game_y + segment[1] * GRID_SIZE + 2,
+                GRID_SIZE - 4, GRID_SIZE - 4
+            )
+
+            if i == 0:  # Head
+                pygame.draw.rect(self.screen, self.colors['snake_head'], rect)
+                pygame.draw.rect(
+                    self.screen, self.colors['snake_border'], rect, 3)
+            else:  # Body
+                alpha = max(0.4, 1.0 - (i * 0.1))
+                color = tuple(int(c * alpha)
+                              for c in self.colors['snake_body'])
+                pygame.draw.rect(self.screen, color, rect)
+                pygame.draw.rect(
+                    self.screen, self.colors['snake_border'], rect, 2)
+
+        # Food
+        food_rect = pygame.Rect(
+            self.game_x + game.food[0] * GRID_SIZE + 4,
+            self.game_y + game.food[1] * GRID_SIZE + 4,
+            GRID_SIZE - 8, GRID_SIZE - 8
+        )
+        pygame.draw.ellipse(self.screen, self.colors['food'], food_rect)
+
+        # Food glow
+        glow_rect = pygame.Rect(
+            self.game_x + game.food[0] * GRID_SIZE,
+            self.game_y + game.food[1] * GRID_SIZE,
+            GRID_SIZE, GRID_SIZE
+        )
+        pygame.draw.rect(self.screen, self.colors['food_glow'], glow_rect, 4)
+
+    def draw_stats_panel(self, game, agent, episode):
+        """Draw the statistics panel"""
+        x, y = self.stats_x, self.stats_y
+
+        # Title
+        title_text = self.font_title.render(
+            "AI TRAINING", True, self.colors['text_accent'])
+        self.screen.blit(title_text, (x, y))
+        y += 80
+
+        # Current Score
+        score_height = self.draw_text_with_background(
+            f"SCORE: {game.score}",
+            self.font_large, self.colors['text_primary'],
+            self.colors['panel_bg'], x, y, 15
+        )
+        y += score_height + 20
+
+        # Episode
+        episode_height = self.draw_text_with_background(
+            f"Episode: {episode:,}",
+            self.font_medium, self.colors['text_secondary'],
+            self.colors['panel_bg'], x, y, 12
+        )
+        y += episode_height + 15
+
+        # States learned
+        states_height = self.draw_text_with_background(
+            f"States: {len(agent.q_table):,}",
+            self.font_medium, self.colors['text_secondary'],
+            self.colors['panel_bg'], x, y, 12
+        )
+        y += states_height + 25
+
+        # Exploration rate
+        exploration_text = self.font_medium.render(
+            "Exploration Rate:", True, self.colors['text_secondary'])
+        self.screen.blit(exploration_text, (x, y))
+        y += 40
+
+        epsilon_text = self.font_large.render(
+            f"{agent.epsilon:.3f}", True, self.colors['text_primary'])
+        self.screen.blit(epsilon_text, (x, y))
+
+        # Exploration progress bar
+        self.draw_progress_bar(x + 150, y + 10, 200, 30,
+                               agent.epsilon, f"{agent.epsilon:.1%}")
+        y += 70
+
+        # Performance metrics
+        if len(agent.scores) > 0:
+            recent_scores = agent.scores[-100:] if len(
+                agent.scores) >= 100 else agent.scores
+            avg_score = np.mean(recent_scores)
+            max_score = max(agent.scores)
+
+            # Average score
+            avg_height = self.draw_text_with_background(
+                f"Avg Score: {avg_score:.1f}",
+                self.font_medium, self.colors['text_secondary'],
+                self.colors['panel_bg'], x, y, 12
+            )
+            y += avg_height + 15
+
+            # Best score
+            best_height = self.draw_text_with_background(
+                f"Best Score: {max_score}",
+                self.font_medium, self.colors['text_accent'],
+                self.colors['panel_bg'], x, y, 12
+            )
+            y += best_height + 25
+
+            # Performance trend
+            if len(agent.scores) >= 20:
+                recent_avg = np.mean(agent.scores[-10:])
+                older_avg = np.mean(agent.scores[-20:-10])
+
+                if recent_avg > older_avg * 1.1:
+                    trend_text = "↗ IMPROVING"
+                    trend_color = (100, 255, 100)
+                elif recent_avg < older_avg * 0.9:
+                    trend_text = "↘ DECLINING"
+                    trend_color = (255, 150, 100)
+                else:
+                    trend_text = "→ STABLE"
+                    trend_color = self.colors['text_accent']
+
+                trend_surface = self.font_medium.render(
+                    trend_text, True, trend_color)
+                self.screen.blit(trend_surface, (x, y))
+
+    def draw_training_progress(self, episode):
+        """Draw training progress at bottom"""
+        y = WINDOW_HEIGHT - 120  # More space from bottom
+        max_episodes = 1000
+        progress = min(episode / max_episodes, 1.0)
+
+        # Progress label
+        progress_text = self.font_medium.render(
+            "Training Progress:", True, self.colors['text_primary'])
+        self.screen.blit(progress_text, (80, y))  # More margin from left
+
+        # Progress bar with better spacing
+        self.draw_progress_bar(320, y - 5, 450, 40,
+                               progress, f"{episode:,} / {max_episodes:,}")
+
+        # Percentage
+        percent_text = self.font_medium.render(
+            f"{progress:.1%}", True, self.colors['text_accent'])
+        self.screen.blit(percent_text, (790, y))
+
+    def draw_controls(self):
+        """Draw control instructions"""
+        y = WINDOW_HEIGHT - 60  # More space from bottom
+        controls_text = "CONTROLS: SPACE = Pause/Resume • R = Reset • S = Save Model • ESC = Exit"
+        controls_surface = self.font_small.render(
+            controls_text, True, self.colors['text_secondary'])
+
+        # Center the text
+        text_rect = controls_surface.get_rect()
+        x = (WINDOW_WIDTH - text_rect.width) // 2
+        self.screen.blit(controls_surface, (x, y))
 
     def render(self, game, agent, episode):
-        """Render the game state"""
-        self.screen.fill(BLACK)
+        """Main render function"""
+        # Clear screen
+        self.screen.fill(self.colors['background'])
 
-        # Draw snake
-        for segment in game.snake:
-            rect = pygame.Rect(segment[0] * GRID_SIZE, segment[1] * GRID_SIZE,
-                               GRID_SIZE, GRID_SIZE)
-            pygame.draw.rect(self.screen, GREEN, rect)
-            pygame.draw.rect(self.screen, WHITE, rect, 1)
+        # Draw all components
+        self.draw_game_area(game)
+        self.draw_stats_panel(game, agent, episode)
+        self.draw_training_progress(episode)
+        self.draw_controls()
 
-        # Draw food
-        food_rect = pygame.Rect(game.food[0] * GRID_SIZE, game.food[1] * GRID_SIZE,
-                                GRID_SIZE, GRID_SIZE)
-        pygame.draw.rect(self.screen, RED, food_rect)
-
-        # Draw UI
-        y_offset = GRID_HEIGHT * GRID_SIZE + 10
-
-        score_text = self.font.render(f"Score: {game.score}", True, WHITE)
-        self.screen.blit(score_text, (10, y_offset))
-
-        episode_text = self.font.render(f"Episode: {episode}", True, WHITE)
-        self.screen.blit(episode_text, (200, y_offset))
-
-        epsilon_text = self.font.render(
-            f"Epsilon: {agent.epsilon:.3f}", True, WHITE)
-        self.screen.blit(epsilon_text, (400, y_offset))
-
-        states_text = self.font.render(
-            f"States: {len(agent.q_table)}", True, WHITE)
-        self.screen.blit(states_text, (10, y_offset + 30))
-
-        if len(agent.scores) > 0:
-            avg_score = np.mean(agent.scores[-100:])
-            avg_text = self.font.render(
-                f"Avg Score (last 100): {avg_score:.1f}", True, WHITE)
-            self.screen.blit(avg_text, (250, y_offset + 30))
-
+        # Update display
         pygame.display.flip()
 
     def handle_events(self):
@@ -279,6 +503,12 @@ class GameRenderer:
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_SPACE:
                     return "pause"
+                elif event.key == pygame.K_r:
+                    return "reset"
+                elif event.key == pygame.K_s:
+                    return "save"
+                elif event.key == pygame.K_ESCAPE:
+                    return False
         return True
 
 
@@ -295,7 +525,7 @@ def main():
     # Training parameters
     episode = 0
     max_episodes = 10000
-    render_every = 10  # Render every N episodes
+    render_every = 1  # Render every episode for smooth visuals
     save_every = 100   # Save model every N episodes
 
     running = True
@@ -303,7 +533,7 @@ def main():
 
     print("Starting Snake Q-Learning Training")
     print("Press SPACE to pause/unpause")
-    print("Close window to stop training")
+    print("Press ESC or close window to stop training")
 
     while running and episode < max_episodes:
         state = game.reset()
@@ -320,6 +550,13 @@ def main():
                 elif event_result == "pause":
                     paused = not paused
                     print("Paused" if paused else "Resumed")
+                elif event_result == "reset":
+                    episode = 0
+                    agent.scores = []
+                    print("Training reset")
+                elif event_result == "save":
+                    agent.save_model(model_file)
+                    print(f"Model saved manually at episode {episode}")
 
             if paused:
                 renderer.clock.tick(10)
@@ -341,7 +578,7 @@ def main():
             # Render game
             if episode % render_every == 0:
                 renderer.render(game, agent, episode)
-                renderer.clock.tick(10)  # Control game speed
+                renderer.clock.tick(15)  # Smooth animation
 
         # Episode finished
         agent.scores.append(game.score)
